@@ -1,7 +1,11 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/lapingvino/eolnpoc/olnjson"
+)
 
 func main() {
-	fmt.Println("Hello world!")
+	fmt.Printf("%#v\n", olnjson.Format{})
 }
