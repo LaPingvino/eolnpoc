@@ -3,45 +3,57 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/base64"
-	"time"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
+// POWEncode performs proof-of-work encoding by finding a nonce
+// that when combined with the format string produces a hash with
+// the specified number of leading zero bits.
 func POWEncode(bits int, format string) string {
-	var sha [sha1.Size]byte
-	var shab, check string
-	for i := 0; i < bits; i++ {
-		check += "0";
-	}
-	for i := 0; ;i++ {
+	// Build check string: "000...0" with 'bits' zeros
+	check := strings.Repeat("0", bits)
+
+	for i := 0; ; i++ {
 		encode := fmt.Sprintf(format, i)
-		sha = sha1.Sum([]byte(encode))
-		shab = ""
+		sha := sha1.Sum([]byte(encode))
+
+		// Convert hash to binary string
+		var shab strings.Builder
 		for _, el := range sha {
-			shab += fmt.Sprintf("%08b", el)
+			shab.WriteString(fmt.Sprintf("%08b", el))
 		}
-		if shab[:bits] == check {
-			return fmt.Sprintf(format, i)
+
+		// Check if we have enough leading zeros
+		if strings.HasPrefix(shab.String(), check) {
+			return encode
 		}
 	}
 }
 
 func main() {
 	if len(os.Args) < 4 {
-		panic("not enough arguments: requires bits keyword message")
+		fmt.Fprintf(os.Stderr, "Usage: %s <bits> <keyword> <message...>\n", os.Args[0])
+		os.Exit(1)
 	}
-	var teststring = []byte(strings.Join(os.Args[3:], " "))
-	var keyword string
-	var date = time.Now().Format("20060102150405")
-	var powbits, err = strconv.Atoi(os.Args[1])
+
+	powbits, err := strconv.Atoi(os.Args[1])
 	if err != nil {
-		panic("error converting the proof of work strength in bits")
+		fmt.Fprintf(os.Stderr, "Error: invalid bits value: %v\n", err)
+		os.Exit(1)
 	}
-	keyword = os.Args[2]
-	var testencoded = base64.URLEncoding.EncodeToString(teststring)
-	result := POWEncode(powbits, "%d;"+date+";"+testencoded+";"+keyword)
-	fmt.Println(result, fmt.Sprintf("%x", sha1.Sum([]byte(result))))
+
+	keyword := os.Args[2]
+	messageString := strings.Join(os.Args[3:], " ")
+	messageEncoded := base64.URLEncoding.EncodeToString([]byte(messageString))
+	date := time.Now().Format("20060102150405")
+
+	format := "%d;" + date + ";" + messageEncoded + ";" + keyword
+	result := POWEncode(powbits, format)
+	hash := sha1.Sum([]byte(result))
+
+	fmt.Printf("%s %x\n", result, hash)
 }
