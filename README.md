@@ -13,27 +13,95 @@ This PoC uses NATS.io for P2P message distribution. No complex setup needed!
 go build -o olnnode ./cmd/olnnode/main.go
 ```
 
-### Publish a Message
+### Three Modes: Listen, Publish, and Chat
 
-```bash
-./olnnode publish "Hello #OLN world! #test"
-```
-
-### Listen for Messages
+#### Listen Mode - Receive Messages
 
 ```bash
 ./olnnode listen
 ```
 
-In another terminal, publish messages and they'll appear in the listener!
+Listens for incoming messages and displays them as they arrive.
+
+#### Publish Mode - Send a Message
+
+```bash
+./olnnode publish "Hello #OLN world! #test"
+```
+
+Sends a message to the OLN network with automatic hashtag extraction.
+
+#### Chat Mode - Interactive P2P Chat (NEW!)
+
+```bash
+./olnnode chat
+```
+
+Combined listen + publish with message caching, filtering, and prioritization!
+
+**Chat Features:**
+- **Interactive input:** Type messages at the prompt
+- **Message caching:** Stores up to 100 messages in memory
+- **Filtering:** Show only messages with specific hashtags or locations
+- **Priority queue:** Messages sorted by recency, TTL, and proof-of-work
+- **Message rebroadcasting:** Automatically re-share high-priority messages
+- **Proof-of-work:** Add computational weight to important messages
+- **Commands:** Type `!help` in chat mode for available commands
+
+**Chat Examples:**
+
+Basic chat:
+```bash
+./olnnode chat
+```
+
+Chat with hashtag filters (shows only #OLN and #test messages):
+```bash
+./olnnode chat --tag="#OLN,#test"
+```
+
+Chat with location filter:
+```bash
+./olnnode chat --location="6FG22222+"
+```
+
+Chat with auto proof-of-work (8-bit PoW on all outgoing messages):
+```bash
+./olnnode chat --auto-pow=8
+```
+
+Chat with custom server:
+```bash
+./olnnode chat --server=nats://localhost:4222
+```
+
+**Chat Commands:**
+
+Inside chat mode, type:
+- `!pow <bits> <message>` - Send message with proof-of-work
+- `!list` - Show all cached messages sorted by priority
+- `!help` - Show available commands
+
+**Chat Caching & Prioritization:**
+
+Messages are prioritized by:
+1. Filter matches (highest priority)
+2. Proof-of-work difficulty
+3. Time-to-live (TTL) remaining
+4. Message recency
+5. Number of hops (rebroadcasts)
+
+Messages automatically expire after 7 days. High-priority messages are rebroadcasted every 5 minutes (configurable).
 
 ### Connect to a Different NATS Server
 
+The default server is `nats://demo.nats.io:4222`, which is public and requires no setup. For any mode:
+
 ```bash
 ./olnnode server nats://localhost:4222 listen
+./olnnode server nats://localhost:4222 publish "Your message"
+./olnnode server nats://localhost:4222 chat
 ```
-
-The default server is `nats://demo.nats.io:4222`, which is public and requires no setup.
 
 ---
 
