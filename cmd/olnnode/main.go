@@ -22,11 +22,19 @@ const (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [listen|publish|server] [args...]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [listen|publish|chat|server] [args...]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nCommands:\n")
 		fmt.Fprintf(os.Stderr, "  listen                    - Listen for OLN messages\n")
 		fmt.Fprintf(os.Stderr, "  publish <message>         - Publish a message to OLN network\n")
+		fmt.Fprintf(os.Stderr, "  chat [options]            - Interactive chat mode with message caching\n")
 		fmt.Fprintf(os.Stderr, "  server <nats-url>         - Set NATS server URL (default: %s)\n", defaultNATSURL)
+		fmt.Fprintf(os.Stderr, "\nChat options:\n")
+		fmt.Fprintf(os.Stderr, "  --tag=<tags>              - Comma-separated hashtags to filter (e.g., #OLN,#test)\n")
+		fmt.Fprintf(os.Stderr, "  --location=<pluscode>     - Location filter (pluscode format)\n")
+		fmt.Fprintf(os.Stderr, "  --max-cache=N             - Max messages to cache (default: 100)\n")
+		fmt.Fprintf(os.Stderr, "  --rebroadcast=Xm          - Rebroadcast interval (default: 5m)\n")
+		fmt.Fprintf(os.Stderr, "  --auto-pow=N              - Auto-apply N-bit PoW to all messages\n")
+		fmt.Fprintf(os.Stderr, "  --server=<url>            - NATS server URL\n")
 		os.Exit(1)
 	}
 
@@ -43,6 +51,8 @@ func main() {
 		}
 		message := strings.Join(os.Args[2:], " ")
 		publishCommand(natsURL, message)
+	case "chat":
+		chatCommand(natsURL, os.Args[2:])
 	case "server":
 		if len(os.Args) < 3 {
 			fmt.Fprintf(os.Stderr, "Error: server requires a URL\n")
