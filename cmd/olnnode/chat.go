@@ -509,16 +509,434 @@ func (s *ChatState) handleCommand(input string) {
 		s.publishMessage(message, bits)
 
 	case "!list":
-		s.listMessages()
+		s.listMessages(parts[1:])
+
+	case "!filter":
+		s.handleFilterCommand(parts[1:])
+
+	case "!stats":
+		s.showStats()
+
+	case "!show":
+		if len(parts) < 2 {
+			fmt.Println("Usage: !show <hash>")
+			return
+		}
+		s.showMessage(parts[1])
+
+	case "!clear":
+		s.clearCache()
+
+	case "!search":
+		s.searchMessages(parts[1:])
 
 	case "!help":
 		fmt.Println("Commands:")
-		fmt.Println("  !pow <bits> <message>  - Send message with proof-of-work")
-		fmt.Println("  !list                  - List cached messages")
-		fmt.Println("  !help                  - Show this help")
+		fmt.Println("  !pow <bits> <message>       - Send message with proof-of-work")
+		fmt.Println("  !list [N|full]              - List cached messages (top N or full text)")
+		fmt.Println("  !filter add tag <tags>      - Add hashtag filter(s)")
+		fmt.Println("  !filter add location <code> - Add location filter")
+		fmt.Println("  !filter remove tag <tag>    - Remove hashtag filter")
+		fmt.Println("  !filter remove location     - Remove location filters")
+		fmt.Println("  !filter clear               - Clear all filters")
+		fmt.Println("  !filter show                - Show active filters")
+		fmt.Println("  !search <query>             - Search messages by text/tags/location")
+		fmt.Println("  !search tag <hashtag>       - Search by specific hashtag")
+		fmt.Println("  !search location <code>     - Search by location proximity")
+		fmt.Println("  !search text <keywords>     - Search only in message text")
+		fmt.Println("  !stats                      - Show cache statistics")
+		fmt.Println("  !show <hash>                - Show full message details")
+		fmt.Println("  !clear                      - Clear message cache")
+		fmt.Println("  !help                       - Show this help")
 
 	default:
 		fmt.Println("Unknown command. Type !help for commands.")
+	}
+}
+
+func (s *ChatState) handleFilterCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: !filter <add|remove|clear|show> ...")
+		return
+	}
+
+	action := args[0]
+
+	switch action {
+	case "add":
+		if len(args) < 3 {
+			fmt.Println("Usage: !filter add <tag|location> <value>")
+			return
+		}
+		filterType := args[1]
+		value := strings.Join(args[2:], " ")
+
+		if filterType == "tag" {
+			s.addHashtagFilter(value)
+		} else if filterType == "location" {
+			s.addLocationFilter(value)
+		} else {
+			fmt.Println("Unknown filter type. Use 'tag' or 'location'")
+		}
+
+	case "remove":
+		if len(args) < 2 {
+			fmt.Println("Usage: !filter remove <tag|location> [value]")
+			return
+		}
+		filterType := args[1]
+
+		if filterType == "tag" && len(args) >= 3 {
+			s.removeHashtagFilter(args[2])
+		} else if filterType == "location" {
+			s.removeLocationFilter()
+		} else {
+			fmt.Println("Usage: !filter remove <tag|location> [value]")
+		}
+
+	case "clear":
+		s.clearFilters()
+
+	case "show":
+		s.showFilters()
+
+	default:
+		fmt.Println("Unknown filter action. Use: add, remove, clear, or show")
+	}
+}
+
+func (s *ChatState) addHashtagFilter(tags string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, tag := range strings.Split(tags, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag != "" {
+			// Check if already exists
+			found := false
+			for _, existing := range s.Filters.Hashtags {
+				if existing == tag {
+					found = true
+					break
+				}
+			}
+			if !found {
+				s.Filters.Hashtags = append(s.Filters.Hashtags, tag)
+				fmt.Printf("Added tag filter: %s\n", tag)
+			}
+		}
+	}
+	s.recalculatePriorities()
+}
+
+func (s *ChatState) removeHashtagFilter(tag string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, t := range s.Filters.Hashtags {
+		if t == tag {
+			s.Filters.Hashtags = append(s.Filters.Hashtags[:i], s.Filters.Hashtags[i+1:]...)
+			fmt.Printf("Removed tag filter: %s\n", tag)
+			s.recalculatePriorities()
+			return
+		}
+	}
+	fmt.Printf("Filter not found: %s\n", tag)
+}
+
+func (s *ChatState) addLocationFilter(locationCode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	locationCode = strings.TrimSpace(locationCode)
+	// Accept any location code format (will validate in proximity calculation)
+	if !location.ValidatePluscode(locationCode) {
+		fmt.Printf("Warning: '%s' may not be a valid pluscode\n", locationCode)
+	}
+
+	// Check if already exists
+	for _, existing := range s.Filters.Locations {
+		if existing == locationCode {
+			fmt.Printf("Location filter already exists: %s\n", locationCode)
+			return
+		}
+	}
+
+	s.Filters.Locations = append(s.Filters.Locations, locationCode)
+	fmt.Printf("Added location filter: %s\n", locationCode)
+	s.recalculatePriorities()
+}
+
+func (s *ChatState) removeLocationFilter() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.Filters.Locations) == 0 {
+		fmt.Println("No location filters to remove")
+		return
+	}
+
+	fmt.Printf("Removed %d location filter(s)\n", len(s.Filters.Locations))
+	s.Filters.Locations = []string{}
+	s.recalculatePriorities()
+}
+
+func (s *ChatState) clearFilters() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Filters.Hashtags = []string{}
+	s.Filters.Locations = []string{}
+	fmt.Println("All filters cleared")
+	s.recalculatePriorities()
+}
+
+func (s *ChatState) showFilters() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(s.Filters.Hashtags) == 0 && len(s.Filters.Locations) == 0 {
+		fmt.Println("No active filters")
+		return
+	}
+
+	if len(s.Filters.Hashtags) > 0 {
+		fmt.Printf("Hashtag filters: %s\n", strings.Join(s.Filters.Hashtags, ", "))
+	}
+	if len(s.Filters.Locations) > 0 {
+		fmt.Printf("Location filters: %s\n", strings.Join(s.Filters.Locations, ", "))
+	}
+}
+
+func (s *ChatState) recalculatePriorities() {
+	for _, entry := range s.Cache {
+		// Recalculate proximity if location filters changed
+		proximityScore := 0
+		if len(s.Filters.Locations) > 0 && len(entry.Plustags) > 0 {
+			for _, msgLoc := range entry.Plustags {
+				for _, userLoc := range s.Filters.Locations {
+					score := location.CalculateProximity(msgLoc, userLoc)
+					if score > proximityScore {
+						proximityScore = score
+					}
+				}
+			}
+		}
+		entry.ProximityScore = proximityScore
+
+		// Recalculate priority
+		entry.Priority = s.calculatePriority(entry.Message, entry.PoWBits, proximityScore)
+	}
+}
+
+func (s *ChatState) showStats() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	fmt.Printf("Cache: %d/%d messages\n", len(s.Cache), s.MaxCacheSize)
+
+	if len(s.Filters.Hashtags) > 0 || len(s.Filters.Locations) > 0 {
+		fmt.Print("Filters: ")
+		if len(s.Filters.Hashtags) > 0 {
+			fmt.Print(strings.Join(s.Filters.Hashtags, ", "))
+		}
+		if len(s.Filters.Locations) > 0 {
+			if len(s.Filters.Hashtags) > 0 {
+				fmt.Print(" | ")
+			}
+			fmt.Print(strings.Join(s.Filters.Locations, ", "))
+		}
+		fmt.Println()
+	} else {
+		fmt.Println("Filters: none")
+	}
+
+	if len(s.Cache) > 0 {
+		var totalAge time.Duration
+		var minPriority, maxPriority int
+		first := true
+
+		for _, entry := range s.Cache {
+			totalAge += time.Since(entry.FirstSeen)
+			if first {
+				minPriority = entry.Priority
+				maxPriority = entry.Priority
+				first = false
+			} else {
+				if entry.Priority < minPriority {
+					minPriority = entry.Priority
+				}
+				if entry.Priority > maxPriority {
+					maxPriority = entry.Priority
+				}
+			}
+		}
+
+		avgAge := totalAge / time.Duration(len(s.Cache))
+		fmt.Printf("Average age: %s\n", avgAge.Round(time.Second))
+		fmt.Printf("Priority range: %d-%d\n", minPriority, maxPriority)
+	}
+}
+
+func (s *ChatState) showMessage(hashPrefix string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Find message by hash prefix
+	for hash, entry := range s.Cache {
+		if strings.HasPrefix(hash, hashPrefix) {
+			msg := entry.Message
+			indicator := s.buildIndicators(entry)
+
+			fmt.Printf("\n[%s] %s%s\n", msg.Timestamp.Format("2006-01-02 15:04:05"), hash, indicator)
+			fmt.Printf("Priority: %d\n", entry.Priority)
+			fmt.Printf("Age: %s\n", time.Since(msg.Timestamp).Round(time.Second))
+
+			if len(msg.Tags) > 0 {
+				fmt.Printf("Tags: %s\n", strings.Join(msg.Tags, ", "))
+			}
+			if msg.Origin.Display != "" {
+				fmt.Printf("From: %s\n", msg.Origin.Display)
+			}
+			fmt.Printf("\n%s\n", msg.Raw)
+			return
+		}
+	}
+
+	fmt.Printf("Message not found: %s\n", hashPrefix)
+}
+
+func (s *ChatState) clearCache() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := len(s.Cache)
+	s.Cache = make(map[string]*MessageEntry)
+	fmt.Printf("Cleared %d messages from cache\n", count)
+}
+
+func (s *ChatState) searchMessages(args []string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(args) == 0 {
+		fmt.Println("Usage: !search <query> | !search tag <tag> | !search location <code> | !search text <keywords>")
+		return
+	}
+
+	var matches []struct {
+		hash  string
+		entry *MessageEntry
+	}
+
+	mode := "default"
+	query := strings.Join(args, " ")
+
+	// Detect search mode
+	if len(args) >= 2 {
+		if args[0] == "tag" {
+			mode = "tag"
+			query = strings.Join(args[1:], " ")
+		} else if args[0] == "location" {
+			mode = "location"
+			query = strings.Join(args[1:], " ")
+		} else if args[0] == "text" {
+			mode = "text"
+			query = strings.Join(args[1:], " ")
+		}
+	}
+
+	queryLower := strings.ToLower(query)
+
+	// Search through cache
+	for hash, entry := range s.Cache {
+		match := false
+
+		switch mode {
+		case "tag":
+			// Search for exact tag match
+			for _, tag := range entry.Message.Tags {
+				if strings.EqualFold(tag, query) {
+					match = true
+					break
+				}
+			}
+
+		case "location":
+			// Use proximity scoring for location matching
+			for _, plustag := range entry.Plustags {
+				if location.CalculateProximity(plustag, query) > 0 {
+					match = true
+					break
+				}
+			}
+
+		case "text":
+			// Search only in message text
+			if strings.Contains(strings.ToLower(entry.Message.Raw), queryLower) {
+				match = true
+			}
+
+		default:
+			// Search in message text
+			if strings.Contains(strings.ToLower(entry.Message.Raw), queryLower) {
+				match = true
+			}
+			// Search in tags
+			if !match {
+				for _, tag := range entry.Message.Tags {
+					if strings.Contains(strings.ToLower(tag), queryLower) {
+						match = true
+						break
+					}
+				}
+			}
+			// Search in plustags
+			if !match {
+				for _, plustag := range entry.Plustags {
+					if strings.Contains(strings.ToLower(plustag), queryLower) {
+						match = true
+						break
+					}
+				}
+			}
+		}
+
+		if match {
+			matches = append(matches, struct {
+				hash  string
+				entry *MessageEntry
+			}{hash, entry})
+		}
+	}
+
+	if len(matches) == 0 {
+		fmt.Printf("No messages found for: %s\n", query)
+		return
+	}
+
+	// Sort by priority (most relevant first)
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].entry.Priority > matches[j].entry.Priority
+	})
+
+	fmt.Printf("Found %d message(s) for: %s\n", len(matches), query)
+	for i, m := range matches {
+		indicator := s.buildIndicators(m.entry)
+		age := time.Since(m.entry.Message.Timestamp)
+
+		fmt.Printf("%d. [%s] priority: %d, age: %s%s\n",
+			i+1, m.hash[:8], m.entry.Priority, age.Round(time.Second), indicator)
+
+		if len(m.entry.Message.Tags) > 0 {
+			fmt.Printf("   Tags: %s\n", strings.Join(m.entry.Message.Tags, ", "))
+		}
+
+		text := m.entry.Message.Raw
+		if len(text) > 70 {
+			text = text[:70] + "..."
+		}
+		fmt.Printf("   \"%s\"\n", text)
 	}
 }
 
@@ -607,13 +1025,25 @@ func (s *ChatState) publishMessage(messageText string, powBits int) {
 	fmt.Printf("Published (hash: %s)\n", msgHash[:8])
 }
 
-func (s *ChatState) listMessages() {
+func (s *ChatState) listMessages(args []string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if len(s.Cache) == 0 {
 		fmt.Println("No messages cached")
 		return
+	}
+
+	// Parse options
+	limit := 0
+	fullText := false
+
+	for _, arg := range args {
+		if arg == "full" {
+			fullText = true
+		} else if num, err := strconv.Atoi(arg); err == nil && num > 0 {
+			limit = num
+		}
 	}
 
 	// Sort by priority
@@ -631,18 +1061,52 @@ func (s *ChatState) listMessages() {
 		return entries[i].entry.Priority > entries[j].entry.Priority
 	})
 
-	fmt.Printf("Cached messages (%d):\n", len(s.Cache))
+	if limit > 0 && limit < len(entries) {
+		entries = entries[:limit]
+	}
+
+	fmt.Printf("Cached messages (%d/%d):\n", len(entries), len(s.Cache))
 	for i, e := range entries {
-		indicator := ""
-		if s.matchesFilters(e.entry.Message) {
-			indicator = " [★]"
-		}
-		if e.entry.PoWBits > 0 {
-			indicator += fmt.Sprintf(" [PoW:%d]", e.entry.PoWBits)
-		}
+		indicator := s.buildIndicators(e.entry)
 
 		age := time.Since(e.entry.Message.Timestamp)
-		fmt.Printf("%d. %s (priority: %d, age: %s)%s\n",
+		fmt.Printf("%d. [%s] priority: %d, age: %s%s\n",
 			i+1, e.hash[:8], e.entry.Priority, age.Round(time.Second), indicator)
+
+		// Show tags
+		if len(e.entry.Message.Tags) > 0 {
+			fmt.Printf("   Tags: %s\n", strings.Join(e.entry.Message.Tags, ", "))
+		}
+
+		// Show message text
+		text := e.entry.Message.Raw
+		if !fullText && len(text) > 70 {
+			text = text[:70] + "..."
+		}
+		fmt.Printf("   \"%s\"\n", text)
 	}
+}
+
+func (s *ChatState) buildIndicators(entry *MessageEntry) string {
+	indicator := ""
+
+	if s.matchesFilters(entry.Message) {
+		indicator = " [★]"
+	}
+
+	if entry.ProximityScore > 0 {
+		if entry.ProximityScore >= 500 {
+			indicator += " [📍 exact]"
+		} else if entry.ProximityScore >= 250 {
+			indicator += " [📍 nearby]"
+		} else {
+			indicator += " [📍 region]"
+		}
+	}
+
+	if entry.PoWBits > 0 {
+		indicator += fmt.Sprintf(" [PoW:%d]", entry.PoWBits)
+	}
+
+	return indicator
 }
