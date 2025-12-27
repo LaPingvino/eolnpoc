@@ -15,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/lapingvino/eolnpoc/location"
 	"github.com/lapingvino/eolnpoc/olnjson"
 	"github.com/lapingvino/eolnpoc/pow"
 )
@@ -28,12 +29,14 @@ const (
 
 // MessageEntry wraps a message with metadata for prioritization
 type MessageEntry struct {
-	Hash      string
-	Message   olnjson.Message
-	Priority  int
-	PoWBits   int
-	FirstSeen time.Time
-	LastSent  time.Time
+	Hash           string
+	Message        olnjson.Message
+	Priority       int
+	PoWBits        int
+	Plustags       []string // Extracted location codes
+	ProximityScore int      // Based on user's location
+	FirstSeen      time.Time
+	LastSent       time.Time
 }
 
 // ChatFilters defines user preferences
@@ -180,16 +183,35 @@ func (s *ChatState) addMessage(hash string, msg olnjson.Message) {
 	// Detect PoW
 	powBits := s.detectPoW(msg.Raw)
 
+	// Extract plustags (both direct and from #geo hashtags)
+	plustags := location.AllPlustags(msg.Raw)
+
+	// Calculate proximity score
+	proximityScore := 0
+	if len(s.Filters.Locations) > 0 && len(plustags) > 0 {
+		// Use the best proximity score among all message locations
+		for _, msgLoc := range plustags {
+			for _, userLoc := range s.Filters.Locations {
+				score := location.CalculateProximity(msgLoc, userLoc)
+				if score > proximityScore {
+					proximityScore = score
+				}
+			}
+		}
+	}
+
 	// Calculate priority
-	priority := s.calculatePriority(msg, powBits)
+	priority := s.calculatePriority(msg, powBits, proximityScore)
 
 	entry := &MessageEntry{
-		Hash:      hash,
-		Message:   msg,
-		Priority:  priority,
-		PoWBits:   powBits,
-		FirstSeen: time.Now(),
-		LastSent:  time.Now(),
+		Hash:           hash,
+		Message:        msg,
+		Priority:       priority,
+		PoWBits:        powBits,
+		Plustags:       plustags,
+		ProximityScore: proximityScore,
+		FirstSeen:      time.Now(),
+		LastSent:       time.Now(),
 	}
 
 	s.Cache[hash] = entry
@@ -210,13 +232,42 @@ func (s *ChatState) displayMessage(hash string, entry *MessageEntry) {
 	if s.matchesFilters(msg) {
 		indicator = " [★]"
 	}
+
+	// Location indicator
+	if entry.ProximityScore > 0 {
+		if entry.ProximityScore >= 500 {
+			indicator += " [📍 exact]"
+		} else if entry.ProximityScore >= 250 {
+			indicator += " [📍 nearby]"
+		} else {
+			indicator += " [📍 region]"
+		}
+	}
+
 	if entry.PoWBits > 0 {
 		indicator += fmt.Sprintf(" [PoW:%d]", entry.PoWBits)
 	}
 
 	fmt.Printf("\n[%s] %s%s\n", msg.Timestamp.Format("2006-01-02 15:04:05"), hash[:8], indicator)
-	if len(msg.Tags) > 0 {
-		fmt.Printf("  Tags: %s\n", strings.Join(msg.Tags, ", "))
+
+	// Show all tags including plustags
+	allTags := msg.Tags
+	for _, plustag := range entry.Plustags {
+		// Check if plustag is already in tags
+		found := false
+		for _, t := range allTags {
+			if t == plustag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			allTags = append(allTags, plustag)
+		}
+	}
+
+	if len(allTags) > 0 {
+		fmt.Printf("  Tags: %s\n", strings.Join(allTags, ", "))
 	}
 	if msg.Origin.Display != "" {
 		fmt.Printf("  From: %s\n", msg.Origin.Display)
@@ -225,13 +276,16 @@ func (s *ChatState) displayMessage(hash string, entry *MessageEntry) {
 	fmt.Print("> ")
 }
 
-func (s *ChatState) calculatePriority(msg olnjson.Message, powBits int) int {
+func (s *ChatState) calculatePriority(msg olnjson.Message, powBits int, proximityScore int) int {
 	priority := 100 // BaseScore
 
 	// FilterBonus
 	if s.matchesFilters(msg) {
 		priority += 1000
 	}
+
+	// ProximityScore (if user has a location filter)
+	priority += proximityScore
 
 	// RecencyScore (TTL remaining as percentage)
 	age := time.Since(msg.Timestamp)
@@ -487,12 +541,19 @@ func (s *ChatState) publishMessage(messageText string, powBits int) {
 
 	// Create message
 	tags := extractHashtags(finalMessage)
+
+	// Extract plustags and geo hashtags
+	plustags := location.AllPlustags(finalMessage)
+	allTags := make([]string, len(tags))
+	copy(allTags, tags)
+	allTags = append(allTags, plustags...)
+
 	msg := olnjson.Message{
 		Raw:       finalMessage,
 		Timestamp: time.Now(),
 		TTL:       ttlDays,
 		Hops:      0,
-		Tags:      tags,
+		Tags:      allTags,
 		Sig:       "",
 		Origin: olnjson.Origin{
 			Display:    "anonymous",
@@ -517,9 +578,17 @@ func (s *ChatState) publishMessage(messageText string, powBits int) {
 		Push:  []string{},
 	}
 
-	// Add tags to index
+	// Add regular tags to index
 	for _, tag := range tags {
 		format.Index[tag] = append(format.Index[tag], msgHash)
+	}
+
+	// Add plustags and their hierarchy to index
+	for _, plustag := range plustags {
+		parents := location.GetParentPlustags(plustag)
+		for _, parent := range parents {
+			format.Index[parent] = append(format.Index[parent], msgHash)
+		}
 	}
 
 	// Marshal and publish
