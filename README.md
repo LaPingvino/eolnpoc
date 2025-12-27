@@ -3,6 +3,40 @@ Ephemeral Open Location Network Proof of Concept
 
 Open Location Network is a flexible idea that this projects intends to bootstrap by giving an example of and proving the basic concepts of the idea. The Ephemeral in the name means that it doesn't try to be persistent in any way, so you shouldn't in any way use it to save any information. This project is for development of concepts, not for storage and I will actively try to avoid storing anything.
 
+## Quick Start: Using OLN with NATS
+
+This PoC uses NATS.io for P2P message distribution. No complex setup needed!
+
+### Build the OLN Node
+
+```bash
+go build -o olnnode ./cmd/olnnode/main.go
+```
+
+### Publish a Message
+
+```bash
+./olnnode publish "Hello #OLN world! #test"
+```
+
+### Listen for Messages
+
+```bash
+./olnnode listen
+```
+
+In another terminal, publish messages and they'll appear in the listener!
+
+### Connect to a Different NATS Server
+
+```bash
+./olnnode server nats://localhost:4222 listen
+```
+
+The default server is `nats://demo.nats.io:4222`, which is public and requires no setup.
+
+---
+
 So what is Open Location Network? Short OLN (and you can also replace the L with Listening) its goal is to create an open source P2P internet backchannel ad-hoc protocol of sorts that grows with our concept of what the internet is. The idea is that you can pass new messages through to other participants in the network and any participant can index them any way it wants and enable people to search for what they need.
 
 What would you index on? Anything that is or will be a standardized way to refer to things. E.g. hashtags for things we talk about, URLs to relate messages to parts of the internet, timestamps and of course the Location part, plustags.
