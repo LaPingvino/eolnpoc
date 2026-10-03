@@ -49,7 +49,7 @@ func main() {
 	keyword := os.Args[2]
 	messageString := strings.Join(os.Args[3:], " ")
 	messageEncoded := base64.URLEncoding.EncodeToString([]byte(messageString))
-	date := time.Now().Format("20060102150405")
+	date := time.Now().UTC().Format("20060102150405") // UTC: the date is part of the work and must mean the same everywhere
 
 	format := "%d;" + date + ";" + messageEncoded + ";" + keyword
 	result := POWEncode(powbits, format)
