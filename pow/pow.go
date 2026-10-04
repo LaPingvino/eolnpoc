@@ -1,87 +1,85 @@
+// Package pow is OLN's proof of work, format v2 (memory-hard).
+//
+// A message line is
+//
+//	v2;<nonce>;<YYYYMMDDhhmmss UTC>;<base64url(message)>;<keywords>
+//
+// and its work is the number of leading zero bits of
+// Argon2id(line, salt "OLN-v2-proofwork", 1 pass, 4 MiB, 1 lane, 32 bytes).
+// Argon2id needs memory per try, so a graphics card gains little over a
+// phone (with SHA-1, v1, the gap was about a millionfold). The message id
+// is the hex SHA-1 of the line. What a node accepts, keeps or drops is the
+// node's own policy: OLN fixes the format, not the policy.
 package pow
 
 import (
-	"crypto/sha1"
 	"encoding/base64"
 	"fmt"
+	"math/bits"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
-// POWEncode performs proof-of-work encoding by finding a nonce that,
-// when combined with the format string, produces a hash with the
-// specified number of leading zero bits.
-func POWEncode(bits int, format string) string {
-	check := strings.Repeat("0", bits)
+// Version is the line prefix this package reads and writes.
+const Version = "v2"
 
-	for i := 0; ; i++ {
-		encode := fmt.Sprintf(format, i)
-		sha := sha1.Sum([]byte(encode))
+var salt = []byte("OLN-v2-proofwork")
 
-		// Convert hash to binary string
-		var shab strings.Builder
-		for _, el := range sha {
-			shab.WriteString(fmt.Sprintf("%08b", el))
+// Work returns the leading zero bits of the line's Argon2id hash (0 for a
+// line that isn't v2).
+func Work(line string) int {
+	if !strings.HasPrefix(line, Version+";") {
+		return 0
+	}
+	h := argon2.IDKey([]byte(line), salt, 1, 4096, 1, 32)
+	n := 0
+	for _, b := range h {
+		if b == 0 {
+			n += 8
+			continue
 		}
+		return n + bits.LeadingZeros8(b)
+	}
+	return n
+}
 
-		// Check if we have enough leading zeros
-		if strings.HasPrefix(shab.String(), check) {
-			return encode
+// POWEncode finds a nonce for format (with one %d for the nonce, and the
+// "v2;" prefix included) giving at least want bits of work.
+func POWEncode(want int, format string) string {
+	for i := 0; ; i++ {
+		if line := fmt.Sprintf(format, i); Work(line) >= want {
+			return line
 		}
 	}
 }
 
-// CreatePoWMessage generates a PoW-encoded message in the format:
-// <nonce>;<date>;<base64_message>;<keyword>, with the date as UTC YYYYMMDDhhmmss.
-func CreatePoWMessage(bits int, keyword, message string) string {
-	messageEncoded := base64.URLEncoding.EncodeToString([]byte(message))
-	date := time.Now().UTC().Format("20060102150405") // UTC: the date is part of the work and must mean the same everywhere
-	format := "%d;" + date + ";" + messageEncoded + ";" + keyword
-	return POWEncode(bits, format)
+// CreatePoWMessage makes a v2 line for message and keyword(s) with at least
+// want bits of work; the date is UTC (it's part of the work).
+func CreatePoWMessage(want int, keyword, message string) string {
+	b64 := base64.URLEncoding.EncodeToString([]byte(message))
+	date := time.Now().UTC().Format("20060102150405")
+	return POWEncode(want, Version+";%d;"+date+";"+b64+";"+keyword)
 }
 
-// ParsePoWMessage parses a PoW-encoded message and returns:
-// (nonce, date, message, keyword, error)
+// ParsePoWMessage splits a v2 line: (nonce, date, message, keywords, error).
 func ParsePoWMessage(encoded string) (string, string, string, string, error) {
-	parts := strings.Split(encoded, ";")
+	if !strings.HasPrefix(encoded, Version+";") {
+		return "", "", "", "", fmt.Errorf("not an OLN %s message", Version)
+	}
+	parts := strings.Split(strings.TrimPrefix(encoded, Version+";"), ";")
 	if len(parts) < 4 {
 		return "", "", "", "", fmt.Errorf("invalid PoW message format")
 	}
-
-	nonce := parts[0]
-	date := parts[1]
-	messageB64 := parts[2]
-	keyword := strings.Join(parts[3:], ";") // Handle keywords with semicolons
-
-	messageBytes, err := base64.URLEncoding.DecodeString(messageB64)
+	msg, err := base64.URLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("failed to decode message: %v", err)
-	}
-
-	return nonce, date, string(messageBytes), keyword, nil
-}
-
-// ValidatePoW checks if a PoW message has the required number of leading zero bits.
-// Returns the number of leading zero bits found.
-func ValidatePoW(encoded string) int {
-	hash := sha1.Sum([]byte(encoded))
-
-	// Convert hash to binary string
-	var binary strings.Builder
-	for _, el := range hash {
-		binary.WriteString(fmt.Sprintf("%08b", el))
-	}
-
-	// Count leading zeros
-	binStr := binary.String()
-	leadingZeros := 0
-	for _, bit := range binStr {
-		if bit == '0' {
-			leadingZeros++
-		} else {
-			break
+		if msg, err = base64.RawURLEncoding.DecodeString(parts[2]); err != nil {
+			return "", "", "", "", fmt.Errorf("failed to decode message: %v", err)
 		}
 	}
-
-	return leadingZeros
+	return parts[0], parts[1], string(msg), strings.Join(parts[3:], ";"), nil
 }
+
+// ValidatePoW returns the work (leading zero bits) of a line; see Work.
+func ValidatePoW(encoded string) int { return Work(encoded) }

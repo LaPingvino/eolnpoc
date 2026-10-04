@@ -274,3 +274,16 @@ Need to have pubkey and hash format, I think it's good to use [ipfs multihash fo
 ## Sweet, where to connect?
 
 I would like to be able to connect to each other asap over OLN itself, however we implement it, but until then, #oln on Freenode (IRC) is the place to go. Update: I also just created [r/oln](https://reddit.com/r/oln) to talk about OLN stuff. For as long as OLN isn't a thing yet...
+
+## Message format (v2)
+
+    v2;<nonce>;<YYYYMMDDhhmmss UTC>;<base64url(message)>;<keywords>
+
+The proof of work is the number of leading zero bits of
+`Argon2id(line, salt "OLN-v2-proofwork", 1 pass, 4 MiB, 1 lane, 32 bytes)`.
+Argon2id is memory-hard, so a graphics card gains little over a phone
+(v1 used SHA-1, where that gap was about a millionfold). The message id is the
+hex SHA-1 of the line. A message lives longer the more work it carries; what a
+node accepts, keeps or drops is that node's own policy: OLN fixes the format,
+not the policy. Kafumu (https://kafumu.com/oln) speaks this format; the test in
+`pow/pow_test.go` holds the shared Argon2id vector.
