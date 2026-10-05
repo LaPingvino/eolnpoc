@@ -171,7 +171,37 @@ func (s *ChatState) messageReceiver() {
 	<-s.stopChan
 }
 
-func (s *ChatState) addMessage(hash string, msg olnjson.Message) {
+// powWindow is how far a work line's date may lie in the future (clock
+// skew). Older dates are fine: gossip relays messages for days.
+const powWindow = 10 * time.Minute
+
+// trustworthy replaces what a sender could make up with what the node can
+// check: the id is the hash of the raw line (not the key it came under, so
+// nobody can claim a real message's id with junk first, or send one line
+// under endless ids), and a work line's time is the date it was mined with
+// (the Timestamp field is the sender's word: set in the future, a message
+// would never expire and always rank as brand new). A date further ahead
+// than the clock-skew window is refused: such lines were mined ahead.
+// ok=false means drop the message.
+func trustworthy(msg olnjson.Message, now time.Time) (string, olnjson.Message, bool) {
+	hash := generateHash(msg.Raw)
+	if _, date, _, _, err := pow.ParsePoWMessage(msg.Raw); err == nil {
+		at, err := time.Parse("20060102150405", date)
+		if err != nil || at.After(now.Add(powWindow)) {
+			return "", msg, false
+		}
+		msg.Timestamp = at
+	} else if msg.Timestamp.After(now) {
+		msg.Timestamp = now // no work line: at least never "from the future"
+	}
+	return hash, msg, true
+}
+
+func (s *ChatState) addMessage(_ string, msg olnjson.Message) {
+	hash, msg, ok := trustworthy(msg, time.Now().UTC())
+	if !ok {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
